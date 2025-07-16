@@ -195,8 +195,11 @@ func (s *Scheduler) updatePrices() error {
 			config.DB.Model(&priceModel).Update("price", price)
 		}
 
-		ctx := context.Background()
-		config.Redis.Set(ctx, "price:"+symbol, price, 5*time.Minute)
+		// 只在Redis可用时缓存价格
+		if config.Redis != nil {
+			ctx := context.Background()
+			config.Redis.Set(ctx, "price:"+symbol, price, 5*time.Minute)
+		}
 	}
 
 	return nil
@@ -230,8 +233,8 @@ func (s *Scheduler) checkOrders() error {
 		cumulativeQuoteQty, _ := strconv.ParseFloat(orderStatus.CummulativeQuoteQuantity, 64)
 
 		config.DB.Model(&order).Updates(map[string]interface{}{
-			"status":                orderStatus.Status,
-			"executed_qty":          executedQty,
+			"status":               orderStatus.Status,
+			"executed_qty":         executedQty,
 			"cumulative_quote_qty": cumulativeQuoteQty,
 		})
 
@@ -241,7 +244,7 @@ func (s *Scheduler) checkOrders() error {
 			if err := config.DB.First(&strategy, *order.StrategyID).Error; err == nil {
 				if strategy.Type == models.StrategySlowIceberg && strategy.State != nil {
 					strategyState := strategy.State
-					
+
 					// 更新已成交数量
 					if orderStatus.Status == "FILLED" {
 						// 订单完全成交，当前层已成交数量清零
@@ -251,11 +254,11 @@ func (s *Scheduler) checkOrders() error {
 						currentLayerFilled, _ := strategyState["layer_filled_quantity"].(float64)
 						strategyState["layer_filled_quantity"] = currentLayerFilled + executedQty - order.ExecutedQty
 					}
-					
+
 					// 更新总成交数量
 					totalFilled, _ := strategyState["total_filled_quantity"].(float64)
 					strategyState["total_filled_quantity"] = totalFilled + executedQty - order.ExecutedQty
-					
+
 					// 保存策略状态
 					config.DB.Model(&strategy).Update("state", strategyState)
 				}

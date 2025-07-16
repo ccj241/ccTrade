@@ -5,11 +5,10 @@ import (
 	"github.com/ccj241/cctrade/middleware"
 	"github.com/ccj241/cctrade/services"
 	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 	"time"
 )
 
-func SetupRoutes(r *gin.Engine, quantService *services.QuantitativeStrategy, executor *services.StrategyExecutor, logger *zap.Logger) {
+func SetupRoutes(r *gin.Engine, executor *services.StrategyExecutor) {
 	authController := controllers.NewAuthController()
 	strategyController := controllers.NewStrategyController()
 	futuresController := controllers.NewFuturesController()

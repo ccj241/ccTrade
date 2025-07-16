@@ -16,7 +16,6 @@ import (
 	"github.com/ccj241/cctrade/services"
 	"github.com/ccj241/cctrade/tasks"
 	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 func main() {
@@ -66,13 +65,7 @@ func main() {
 	}
 	defer strategyExecutor.Stop()
 
-	// 初始化量化策略服务 - 暂时传入空值
-	var quantService *services.QuantitativeStrategy
-
-	// 初始化日志 - 暂时传入空值
-	var logger *zap.Logger
-
-	routes.SetupRoutes(r, quantService, strategyExecutor, logger)
+	routes.SetupRoutes(r, strategyExecutor)
 
 	scheduler := tasks.NewScheduler()
 	scheduler.Start()
