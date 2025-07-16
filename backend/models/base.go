@@ -35,7 +35,10 @@ const (
 	StrategySlowIceberg StrategyType = "slow_iceberg"
 	StrategyGrid        StrategyType = "grid"
 	StrategyDCA         StrategyType = "dca"
-	// 高级策略类型 - 预留接口，后续添加自定义策略
+	// 高级策略类型
+	StrategyQuantitative    StrategyType = "quantitative"     // 综合量化策略
+	StrategyWeightedScoring StrategyType = "weighted_scoring" // 加权评分策略
+	// 预留接口，后续添加自定义策略
 	// StrategyCustom1   StrategyType = "custom1"
 	// StrategyCustom2   StrategyType = "custom2"
 )

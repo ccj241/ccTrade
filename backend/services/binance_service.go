@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/ccj241/cctrade/models"
 	"github.com/ccj241/cctrade/utils"
 	"github.com/go-playground/validator/v10"
+	"github.com/shopspring/decimal"
 	"github.com/sirupsen/logrus"
 )
 
@@ -69,16 +71,16 @@ type IBinanceService interface {
 
 // BinanceService 币安服务实现
 type BinanceService struct {
-	encryptedAPIKey    string
-	encryptedSecretKey string
-	testNet            bool
-	logger             *logrus.Logger
-	validator          *validator.Validate
-	clientPool         sync.Pool
-	futuresClientPool  sync.Pool
-	rateLimiter        *RateLimiter
-	symbolCache        *SymbolCache
-	mu                 sync.RWMutex
+	apiKey            string // 存储的是解密后的API密钥
+	secretKey         string // 存储的是解密后的Secret密钥
+	testNet           bool
+	logger            *logrus.Logger
+	validator         *validator.Validate
+	clientPool        sync.Pool
+	futuresClientPool sync.Pool
+	rateLimiter       *RateLimiter
+	symbolCache       *SymbolCache
+	mu                sync.RWMutex
 }
 
 // RateLimiter 速率限制器
@@ -124,11 +126,11 @@ func NewBinanceService(apiKey, secretKey string) (*BinanceService, error) {
 
 	// 直接使用传入的密钥（已经是解密后的）
 	bs := &BinanceService{
-		encryptedAPIKey:    apiKey,    // 这里实际上是解密后的密钥
-		encryptedSecretKey: secretKey, // 这里实际上是解密后的密钥
-		testNet:            config.AppConfig.Binance.TestNet,
-		logger:             logger,
-		validator:          validator.New(),
+		apiKey:    apiKey,    // 解密后的API密钥
+		secretKey: secretKey, // 解密后的Secret密钥
+		testNet:   config.AppConfig.Binance.TestNet,
+		logger:    logger,
+		validator: validator.New(),
 		rateLimiter: &RateLimiter{
 			requests: make(map[string][]time.Time),
 			limit:    1200, // 币安默认限制
@@ -154,14 +156,14 @@ func NewBinanceService(apiKey, secretKey string) (*BinanceService, error) {
 				logger.Error("Invalid API credentials: keys too short")
 				return nil
 			}
-			
+
 			// 打印调试信息
 			logger.WithFields(logrus.Fields{
-				"api_key_full": apiKey,
-				"api_key_len": len(apiKey),
-				"secret_key_len": len(secretKey),
+				"api_key_full":     apiKey,
+				"api_key_len":      len(apiKey),
+				"secret_key_len":   len(secretKey),
 				"api_key_first_10": apiKey[:min(10, len(apiKey))],
-				"api_key_last_10": apiKey[max(0, len(apiKey)-10):],
+				"api_key_last_10":  apiKey[max(0, len(apiKey)-10):],
 			}).Info("API Key debug info")
 
 			client := binance.NewClient(apiKey, secretKey)
@@ -173,7 +175,7 @@ func NewBinanceService(apiKey, secretKey string) (*BinanceService, error) {
 				client.BaseURL = "https://api.binance.com"
 				logger.WithField("base_url", client.BaseURL).Debug("Using mainnet API")
 			}
-			
+
 			// 创建自定义的HTTP客户端，添加apiAgentCode
 			customTransport := NewBinanceTransport(config.AppConfig.Binance.SpotAgentCode, false)
 			client.HTTPClient = &http.Client{
@@ -181,7 +183,7 @@ func NewBinanceService(apiKey, secretKey string) (*BinanceService, error) {
 				Transport: customTransport,
 			}
 			client.Debug = false
-			
+
 			// 记录API密钥前缀用于调试
 			logger.WithField("api_key_prefix", apiKey[:6]+"...").Debug("Spot client initialized")
 			return client
@@ -211,14 +213,14 @@ func NewBinanceService(apiKey, secretKey string) (*BinanceService, error) {
 				client.BaseURL = "https://fapi.binance.com"
 				logger.WithField("base_url", client.BaseURL).Debug("Using futures mainnet API")
 			}
-			
+
 			// 创建自定义的HTTP客户端，添加apiAgentCode
 			customTransport := NewBinanceTransport(config.AppConfig.Binance.FuturesAgentCode, true)
 			client.HTTPClient = &http.Client{
 				Timeout:   30 * time.Second,
 				Transport: customTransport,
 			}
-			
+
 			// 记录API密钥前缀用于调试
 			logger.WithField("api_key_prefix", apiKey[:6]+"...").Debug("Futures client initialized")
 			return client
@@ -248,7 +250,7 @@ func max(a, b int) int {
 func cleanAPIKey(key string) string {
 	// 移除前后空白
 	key = strings.TrimSpace(key)
-	
+
 	// 移除所有控制字符，但保留可打印字符
 	var cleaned strings.Builder
 	for _, ch := range key {
@@ -257,59 +259,40 @@ func cleanAPIKey(key string) string {
 			cleaned.WriteRune(ch)
 		}
 	}
-	
+
 	return cleaned.String()
 }
 
-// decryptCredentials 解密API凭证
+// decryptCredentials 获取API凭证（已经是解密后的）
 func (bs *BinanceService) decryptCredentials() (apiKey, secretKey string, err error) {
 	bs.mu.RLock()
 	defer bs.mu.RUnlock()
 
 	// 检查API密钥是否为空
-	if bs.encryptedAPIKey == "" || bs.encryptedSecretKey == "" {
+	if bs.apiKey == "" || bs.secretKey == "" {
 		return "", "", fmt.Errorf("API credentials are empty")
 	}
 
-	// 尝试解密API密钥（检查是否是加密格式）
-	apiKey = bs.encryptedAPIKey
-	secretKey = bs.encryptedSecretKey
-	
-	// 如果密钥看起来像是Base64编码的（加密后的），尝试解密
-	if strings.Contains(apiKey, "/") || strings.Contains(apiKey, "+") || strings.Contains(apiKey, "=") {
-		// 这是加密后的密钥，需要解密
-		decryptedAPIKey, err := utils.DecryptAES(apiKey, config.AppConfig.Security.EncryptionKey)
-		if err == nil {
-			apiKey = decryptedAPIKey
-		} else {
-			bs.logger.WithError(err).Warn("Failed to decrypt API key, using as-is")
-		}
-		
-		decryptedSecretKey, err := utils.DecryptAES(secretKey, config.AppConfig.Security.EncryptionKey)
-		if err == nil {
-			secretKey = decryptedSecretKey
-		} else {
-			bs.logger.WithError(err).Warn("Failed to decrypt secret key, using as-is")
-		}
-	}
+	// 直接返回已经解密的密钥
+	apiKey = bs.apiKey
+	secretKey = bs.secretKey
 
 	// 验证密钥
 	if len(apiKey) == 0 || len(secretKey) == 0 {
 		return "", "", fmt.Errorf("API credentials are empty")
 	}
 
-	// 彻底清理API密钥
+	// 彻底清理API密钥（移除可能的控制字符）
 	apiKey = cleanAPIKey(apiKey)
 	secretKey = cleanAPIKey(secretKey)
 
 	bs.logger.WithFields(logrus.Fields{
-		"api_key_raw_len": len(bs.encryptedAPIKey),
-		"api_key_decrypted_len": len(apiKey),
+		"api_key_len":    len(apiKey),
 		"secret_key_len": len(secretKey),
-		"api_key_full": apiKey,
-		"is_testnet": bs.testNet,
-	}).Info("Credentials cleaned successfully")
-	
+		"api_key_prefix": apiKey[:min(6, len(apiKey))] + "...",
+		"is_testnet":     bs.testNet,
+	}).Debug("Credentials retrieved successfully")
+
 	return apiKey, secretKey, nil
 }
 
@@ -379,11 +362,11 @@ func (bs *BinanceService) GetAccountInfo(ctx context.Context) (*binance.Account,
 	bs.logger.WithFields(logrus.Fields{
 		"base_url":    client.BaseURL,
 		"testnet":     bs.testNet,
-		"recv_window": 60000,
+		"recv_window": config.AppConfig.Binance.RecvWindow,
 	}).Debug("Attempting to get account info")
 
-	// 使用60秒的recvWindow来处理时间同步问题
-	account, err := client.NewGetAccountService().Do(ctx, binance.WithRecvWindow(60000))
+	// 使用配置的recvWindow来处理时间同步问题
+	account, err := client.NewGetAccountService().Do(ctx, binance.WithRecvWindow(config.AppConfig.Binance.RecvWindow))
 	if err != nil {
 		bs.logger.WithError(err).WithFields(logrus.Fields{
 			"base_url": client.BaseURL,
@@ -1075,6 +1058,105 @@ func (bs *BinanceService) Withdraw(ctx context.Context, asset, address, network 
 	return response, nil
 }
 
+// GetKlines 获取K线数据
+func (bs *BinanceService) GetKlines(symbol string, interval string, limit int) ([]KlineData, error) {
+	if err := bs.checkRateLimit("klines"); err != nil {
+		return nil, err
+	}
+
+	client, err := bs.GetSpotClient()
+	if err != nil {
+		return nil, err
+	}
+	defer bs.clientPool.Put(client)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	klines, err := client.NewKlinesService().
+		Symbol(symbol).
+		Interval(interval).
+		Limit(limit).
+		Do(ctx)
+	if err != nil {
+		return nil, bs.handleBinanceError(err)
+	}
+
+	var result []KlineData
+	for _, k := range klines {
+		openPrice, _ := strconv.ParseFloat(k.Open, 64)
+		highPrice, _ := strconv.ParseFloat(k.High, 64)
+		lowPrice, _ := strconv.ParseFloat(k.Low, 64)
+		closePrice, _ := strconv.ParseFloat(k.Close, 64)
+		volume, _ := strconv.ParseFloat(k.Volume, 64)
+
+		result = append(result, KlineData{
+			OpenTime:  k.OpenTime,
+			Open:      openPrice,
+			High:      highPrice,
+			Low:       lowPrice,
+			Close:     closePrice,
+			Volume:    volume,
+			CloseTime: k.CloseTime,
+		})
+	}
+
+	return result, nil
+}
+
+// Get24hrTicker 获取24小时ticker数据
+func (bs *BinanceService) Get24hrTicker(symbol string) (*TickerData, error) {
+	if err := bs.checkRateLimit("ticker"); err != nil {
+		return nil, err
+	}
+
+	client, err := bs.GetSpotClient()
+	if err != nil {
+		return nil, err
+	}
+	defer bs.clientPool.Put(client)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ticker, err := client.NewListPriceChangeStatsService().
+		Symbol(symbol).
+		Do(ctx)
+	if err != nil {
+		return nil, bs.handleBinanceError(err)
+	}
+
+	if len(ticker) == 0 {
+		return nil, errors.New("no ticker data found")
+	}
+
+	t := ticker[0]
+	lastPrice, _ := strconv.ParseFloat(t.LastPrice, 64)
+	volume, _ := strconv.ParseFloat(t.Volume, 64)
+	priceChangePercent, _ := strconv.ParseFloat(t.PriceChangePercent, 64)
+	highPrice, _ := strconv.ParseFloat(t.HighPrice, 64)
+	lowPrice, _ := strconv.ParseFloat(t.LowPrice, 64)
+
+	return &TickerData{
+		Symbol:             t.Symbol,
+		LastPrice:          lastPrice,
+		Volume:             volume,
+		PriceChangePercent: priceChangePercent,
+		HighPrice:          highPrice,
+		LowPrice:           lowPrice,
+	}, nil
+}
+
+// TickerData ticker数据结构
+type TickerData struct {
+	Symbol             string
+	LastPrice          float64
+	Volume             float64
+	PriceChangePercent float64
+	HighPrice          float64
+	LowPrice           float64
+}
+
 // GetTradingSymbols 获取交易对列表
 func (bs *BinanceService) GetTradingSymbols(ctx context.Context) ([]binance.Symbol, error) {
 	// 检查缓存
@@ -1198,11 +1280,11 @@ func (bs *BinanceService) ValidateAPICredentials(ctx context.Context) error {
 // DiagnoseAPIConnection 诊断API连接问题
 func (bs *BinanceService) DiagnoseAPIConnection(ctx context.Context) (map[string]interface{}, error) {
 	diagnosis := make(map[string]interface{})
-	
+
 	// 1. 检查加密密钥
 	diagnosis["encryption_key_length"] = len(config.AppConfig.Security.EncryptionKey)
 	diagnosis["encryption_key_valid"] = len(config.AppConfig.Security.EncryptionKey) == 32
-	
+
 	// 2. 检查API密钥状态
 	apiKey, secretKey, err := bs.decryptCredentials()
 	if err != nil {
@@ -1217,8 +1299,11 @@ func (bs *BinanceService) DiagnoseAPIConnection(ctx context.Context) (map[string
 		if len(apiKey) >= 6 {
 			diagnosis["api_key_prefix"] = apiKey[:6] + "..."
 		}
+		// 验证API密钥格式（币安API密钥通常是64个字符）
+		diagnosis["api_key_format_valid"] = len(apiKey) == 64
+		diagnosis["secret_key_format_valid"] = len(secretKey) == 64
 	}
-	
+
 	// 3. 检查网络配置
 	diagnosis["testnet_enabled"] = bs.testNet
 	client, err := bs.GetSpotClient()
@@ -1229,7 +1314,7 @@ func (bs *BinanceService) DiagnoseAPIConnection(ctx context.Context) (map[string
 		diagnosis["timeout"] = client.HTTPClient.Timeout.String()
 		bs.clientPool.Put(client)
 	}
-	
+
 	// 4. 尝试获取服务器时间（不需要认证）
 	if client != nil {
 		serverTime, err := client.NewServerTimeService().Do(ctx)
@@ -1243,7 +1328,7 @@ func (bs *BinanceService) DiagnoseAPIConnection(ctx context.Context) (map[string
 			diagnosis["network_accessible"] = true
 		}
 	}
-	
+
 	// 5. 如果基本网络可达，测试认证
 	if diagnosis["network_accessible"] == true {
 		// 创建一个新的客户端用于测试
@@ -1251,9 +1336,9 @@ func (bs *BinanceService) DiagnoseAPIConnection(ctx context.Context) (map[string
 		if bs.testNet {
 			testClient.BaseURL = "https://testnet.binance.vision"
 		}
-		
+
 		// 尝试不同的recvWindow值
-		recvWindows := []int64{5000, 30000, 60000}
+		recvWindows := []int64{5000, 30000, config.AppConfig.Binance.RecvWindow}
 		for _, window := range recvWindows {
 			_, err := testClient.NewGetAccountService().Do(ctx, binance.WithRecvWindow(window))
 			diagnosis[fmt.Sprintf("auth_test_recv_window_%d", window)] = err == nil
@@ -1265,10 +1350,10 @@ func (bs *BinanceService) DiagnoseAPIConnection(ctx context.Context) (map[string
 			}
 		}
 	}
-	
+
 	// 6. 记录诊断结果
 	bs.logger.WithField("diagnosis", diagnosis).Info("API connection diagnosis completed")
-	
+
 	return diagnosis, nil
 }
 
@@ -1473,4 +1558,112 @@ func (bs *BinanceService) Close() error {
 	bs.logger.Info("Closing Binance service")
 	// 清理资源
 	return nil
+}
+
+// GetTopSymbols 获取交易量最大的交易对
+func (bs *BinanceService) GetTopSymbols(limit int) ([]string, error) {
+	client, err := bs.GetSpotClient()
+	if err != nil {
+		return nil, err
+	}
+	defer bs.clientPool.Put(client)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 获取24小时行情数据
+	tickers, err := client.NewListPriceChangeStatsService().Do(ctx)
+	if err != nil {
+		return nil, bs.handleBinanceError(err)
+	}
+
+	// 按交易量排序
+	type symbolVolume struct {
+		Symbol string
+		Volume float64
+	}
+
+	var volumes []symbolVolume
+	for _, ticker := range tickers {
+		// 只选择USDT交易对
+		if strings.HasSuffix(ticker.Symbol, "USDT") {
+			volume, _ := strconv.ParseFloat(ticker.QuoteVolume, 64)
+			volumes = append(volumes, symbolVolume{
+				Symbol: ticker.Symbol,
+				Volume: volume,
+			})
+		}
+	}
+
+	// 按交易量降序排序
+	sort.Slice(volumes, func(i, j int) bool {
+		return volumes[i].Volume > volumes[j].Volume
+	})
+
+	// 返回前N个交易对
+	var symbols []string
+	for i := 0; i < limit && i < len(volumes); i++ {
+		symbols = append(symbols, volumes[i].Symbol)
+	}
+
+	return symbols, nil
+}
+
+// GetSymbol24hVolume 获取交易对24小时交易量
+func (bs *BinanceService) GetSymbol24hVolume(symbol string) float64 {
+	client, err := bs.GetSpotClient()
+	if err != nil {
+		return 0
+	}
+	defer bs.clientPool.Put(client)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stats, err := client.NewListPriceChangeStatsService().Symbol(symbol).Do(ctx)
+	if err != nil || len(stats) == 0 {
+		return 0
+	}
+
+	volume, _ := strconv.ParseFloat(stats[0].QuoteVolume, 64)
+	return volume
+}
+
+// GetCurrentPrice 获取当前价格（decimal类型）
+func (bs *BinanceService) GetCurrentPrice(symbol string) (decimal.Decimal, error) {
+	price, err := bs.GetPrice(context.Background(), symbol)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return decimal.NewFromFloat(price), nil
+}
+
+// GetSymbolInfo 获取交易对信息
+func (bs *BinanceService) GetSymbolInfo(symbol string) (*SymbolInfo, error) {
+	info, err := bs.getSymbolInfo(symbol)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SymbolInfo{
+		Symbol:              info.Symbol,
+		BaseAssetPrecision:  info.BaseAssetPrecision,
+		QuoteAssetPrecision: info.QuoteAssetPrecision,
+		MinQty:              info.MinQty,
+		MaxQty:              info.MaxQty,
+		StepSize:            info.StepSize,
+		MinNotional:         info.MinNotional,
+	}, nil
+}
+
+// GetSpotClientDirect 获取现货客户端（公开方法）
+func (bs *BinanceService) GetSpotClientDirect() *binance.Client {
+	client, _ := bs.GetSpotClient()
+	return client
+}
+
+// GetFuturesClientDirect 获取期货客户端（公开方法）
+func (bs *BinanceService) GetFuturesClientDirect() *futures.Client {
+	client, _ := bs.GetFuturesClient()
+	return client
 }

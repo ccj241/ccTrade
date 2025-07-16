@@ -3,17 +3,20 @@ package routes
 import (
 	"github.com/ccj241/cctrade/controllers"
 	"github.com/ccj241/cctrade/middleware"
+	"github.com/ccj241/cctrade/services"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 	"time"
 )
 
-func SetupRoutes(r *gin.Engine) {
+func SetupRoutes(r *gin.Engine, quantService *services.QuantitativeStrategy, executor *services.StrategyExecutor, logger *zap.Logger) {
 	authController := controllers.NewAuthController()
 	strategyController := controllers.NewStrategyController()
 	futuresController := controllers.NewFuturesController()
 	dualInvestmentController := controllers.NewDualInvestmentController()
 	withdrawalController := controllers.NewWithdrawalController()
 	generalController := controllers.NewGeneralController()
+	quantitativeController := controllers.NewQuantitativeController(executor)
 
 	r.Use(middleware.CORSMiddleware())
 	r.Use(middleware.LoggerMiddleware())
@@ -99,6 +102,32 @@ func SetupRoutes(r *gin.Engine) {
 				withdrawals.GET("/history", withdrawalController.GetUserWithdrawalHistory)
 				withdrawals.POST("/history/sync", withdrawalController.SyncWithdrawalHistory)
 				withdrawals.GET("/stats", withdrawalController.GetWithdrawalStats)
+			}
+
+			// 量化策略路由
+			quantitative := authenticated.Group("/quantitative")
+			quantitative.Use(middleware.UserRateLimitMiddleware(100, time.Minute))
+			{
+				// 评分系统
+				quantitative.GET("/scores", quantitativeController.GetScores)
+				quantitative.GET("/scores/:symbol", quantitativeController.GetScoreDetails)
+				quantitative.GET("/top-pairs", quantitativeController.GetTopPairs)
+				quantitative.GET("/historical-scores", quantitativeController.GetHistoricalScores)
+
+				// 仓位管理
+				quantitative.GET("/positions", quantitativeController.GetPositions)
+				quantitative.GET("/risk-metrics", quantitativeController.GetRiskMetrics)
+
+				// 策略配置
+				quantitative.GET("/config", quantitativeController.GetStrategyConfig)
+				quantitative.PUT("/config", quantitativeController.UpdateStrategyConfig)
+
+				// 资金管理
+				quantitative.PUT("/capital", quantitativeController.UpdateCapital)
+				quantitative.POST("/reset-daily-stats", quantitativeController.ResetDailyStats)
+
+				// 性能统计
+				quantitative.GET("/performance", quantitativeController.GetPerformanceStats)
 			}
 		}
 

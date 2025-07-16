@@ -22,7 +22,7 @@ var (
 
 func InitDatabase(config *Config) error {
 	var err error
-	
+
 	// 使用环境变量判断是否使用SQLite进行开发
 	if os.Getenv("USE_SQLITE") == "true" {
 		// 使用SQLite作为开发数据库
@@ -31,6 +31,8 @@ func InitDatabase(config *Config) error {
 			DisableForeignKeyConstraintWhenMigrating: true,
 		})
 		if err != nil {
+			log.Printf("SQLite数据库连接失败: %v", err)
+			log.Println("警告：SQLite数据库不可用，某些功能将受限")
 			return fmt.Errorf("SQLite数据库连接失败: %v", err)
 		}
 		log.Println("使用SQLite数据库进行开发")
@@ -44,14 +46,17 @@ func InitDatabase(config *Config) error {
 			config.Database.Database,
 			config.Database.Charset,
 		)
-		
+
 		DB, err = gorm.Open(mysql.Open(dsn), &gorm.Config{
 			Logger:                                   logger.Default.LogMode(logger.Info),
 			DisableForeignKeyConstraintWhenMigrating: true,
 		})
 		if err != nil {
+			log.Printf("MySQL数据库连接失败: %v", err)
+			log.Println("警告：MySQL数据库不可用，尝试使用SQLite备用数据库")
 			return fmt.Errorf("MySQL数据库连接失败: %v", err)
 		}
+		log.Println("MySQL数据库连接成功")
 	}
 
 	sqlDB, err := DB.DB()
@@ -80,6 +85,9 @@ func InitRedis(config *Config) error {
 
 	_, err := Redis.Ping(ctx).Result()
 	if err != nil {
+		log.Printf("Redis连接失败: %v", err)
+		log.Println("警告：Redis不可用，缓存功能将受限")
+		Redis = nil // 设置为nil表示不可用
 		return fmt.Errorf("redis连接失败: %v", err)
 	}
 

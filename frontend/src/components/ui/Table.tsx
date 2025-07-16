@@ -47,11 +47,12 @@ export const TableHead: React.FC<{ children: React.ReactNode; className?: string
   </th>
 );
 
-export const TableCell: React.FC<{ children: React.ReactNode; className?: string }> = ({ 
+export const TableCell: React.FC<{ children: React.ReactNode; className?: string; colSpan?: number }> = ({ 
   children, 
-  className 
+  className,
+  colSpan
 }) => (
-  <td className={cn('px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100', className)}>
+  <td className={cn('px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100', className)} colSpan={colSpan}>
     {children}
   </td>
 );

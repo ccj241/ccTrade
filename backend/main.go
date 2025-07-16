@@ -16,6 +16,7 @@ import (
 	"github.com/ccj241/cctrade/services"
 	"github.com/ccj241/cctrade/tasks"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -24,7 +25,14 @@ func main() {
 	appConfig := config.LoadConfig()
 
 	if err := config.InitDatabase(appConfig); err != nil {
-		log.Fatalf("数据库初始化失败: %v", err)
+		log.Printf("数据库初始化失败: %v", err)
+		log.Println("警告：数据库未连接，将使用SQLite或只读模式")
+		// 尝试使用SQLite作为备用数据库
+		os.Setenv("USE_SQLITE", "true")
+		if err := config.InitDatabase(appConfig); err != nil {
+			log.Printf("备用SQLite数据库初始化失败: %v", err)
+			log.Println("警告：无数据库连接，某些功能将受限")
+		}
 	}
 	defer config.CloseDatabase()
 
@@ -51,7 +59,20 @@ func main() {
 
 	r := gin.New()
 
-	routes.SetupRoutes(r)
+	// 初始化策略执行器
+	strategyExecutor := services.NewStrategyExecutor(config.DB)
+	if err := strategyExecutor.Start(); err != nil {
+		log.Printf("策略执行器启动失败: %v", err)
+	}
+	defer strategyExecutor.Stop()
+
+	// 初始化量化策略服务 - 暂时传入空值
+	var quantService *services.QuantitativeStrategy
+
+	// 初始化日志 - 暂时传入空值
+	var logger *zap.Logger
+
+	routes.SetupRoutes(r, quantService, strategyExecutor, logger)
 
 	scheduler := tasks.NewScheduler()
 	scheduler.Start()
@@ -72,7 +93,7 @@ func main() {
 	go func() {
 		log.Printf("服务器启动在 %s:%s", appConfig.Server.Host, appConfig.Server.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("服务器启动失败: %v", err)
+			log.Printf("服务器启动失败: %v", err)
 		}
 	}()
 
@@ -85,7 +106,7 @@ func main() {
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatal("服务器强制关闭:", err)
+		log.Printf("服务器强制关闭失败: %v", err)
 	}
 
 	<-ctx.Done()

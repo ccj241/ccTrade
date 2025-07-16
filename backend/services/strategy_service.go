@@ -115,6 +115,8 @@ func (ss *StrategyService) validateStrategyConfig(strategy *models.Strategy) err
 		return ss.validateDCAStrategy(strategy)
 	case models.StrategyIceberg, models.StrategySlowIceberg:
 		return ss.validateIcebergStrategy(strategy)
+	case models.StrategyQuantitative:
+		return ss.validateQuantitativeStrategy(strategy)
 	default:
 		return nil
 	}
@@ -234,6 +236,119 @@ func (ss *StrategyService) validateIcebergStrategy(strategy *models.Strategy) er
 		// 自动生成默认价格浮动
 		priceFloats := ss.calculateDefaultLayerPriceFloats(int(layers))
 		config["layer_price_floats"] = priceFloats
+	}
+
+	return nil
+}
+
+func (ss *StrategyService) validateQuantitativeStrategy(strategy *models.Strategy) error {
+	config := strategy.Config
+	if config == nil {
+		config = make(models.StrategyConfig)
+		strategy.Config = config
+	}
+
+	// 验证交易对列表
+	symbols, ok := config["symbols"].([]interface{})
+	if !ok || len(symbols) == 0 {
+		// 如果没有指定，将使用默认的市值前10币种
+		config["symbols"] = []string{}
+	}
+
+	// 验证最大持仓数量
+	maxPositions, ok := config["max_positions"].(float64)
+	if !ok || maxPositions < 1 || maxPositions > 10 {
+		config["max_positions"] = 3.0 // 默认最大3个持仓
+	}
+
+	// 验证总资金
+	totalCapital, ok := config["total_capital_usdt"].(float64)
+	if !ok || totalCapital < 100 {
+		return errors.New("量化策略需要设置总资金(最少100 USDT)")
+	}
+
+	// 验证风险偏好
+	riskPreference, ok := config["risk_preference"].(string)
+	if !ok || (riskPreference != "conservative" && riskPreference != "moderate" && riskPreference != "aggressive") {
+		config["risk_preference"] = "moderate" // 默认中等风险
+	}
+
+	// 验证更新间隔
+	updateInterval, ok := config["update_interval"].(float64)
+	if !ok || updateInterval < 10 || updateInterval > 3600 {
+		config["update_interval"] = 60.0 // 默认60秒
+	}
+
+	// 验证策略权重（总和必须为1）
+	techWeight, _ := config["technical_weight"].(float64)
+	fundWeight, _ := config["fundamental_weight"].(float64)
+	sentWeight, _ := config["sentiment_weight"].(float64)
+	structWeight, _ := config["structure_weight"].(float64)
+
+	totalWeight := techWeight + fundWeight + sentWeight + structWeight
+	if totalWeight == 0 {
+		// 使用默认权重
+		config["technical_weight"] = 0.4
+		config["fundamental_weight"] = 0.25
+		config["sentiment_weight"] = 0.2
+		config["structure_weight"] = 0.15
+	} else if math.Abs(totalWeight-1.0) > 0.001 {
+		// 归一化权重
+		config["technical_weight"] = techWeight / totalWeight
+		config["fundamental_weight"] = fundWeight / totalWeight
+		config["sentiment_weight"] = sentWeight / totalWeight
+		config["structure_weight"] = structWeight / totalWeight
+	}
+
+	// 验证风险管理参数
+	maxDrawdown, ok := config["max_drawdown"].(float64)
+	if !ok || maxDrawdown <= 0 || maxDrawdown > 50 {
+		switch riskPreference {
+		case "conservative":
+			config["max_drawdown"] = 10.0
+		case "aggressive":
+			config["max_drawdown"] = 25.0
+		default:
+			config["max_drawdown"] = 15.0
+		}
+	}
+
+	stopLoss, ok := config["stop_loss_percent"].(float64)
+	if !ok || stopLoss <= 0 || stopLoss > 50 {
+		switch riskPreference {
+		case "conservative":
+			config["stop_loss_percent"] = 5.0
+		case "aggressive":
+			config["stop_loss_percent"] = 15.0
+		default:
+			config["stop_loss_percent"] = 8.0
+		}
+	}
+
+	takeProfit, ok := config["take_profit_percent"].(float64)
+	if !ok || takeProfit <= 0 || takeProfit > 100 {
+		switch riskPreference {
+		case "conservative":
+			config["take_profit_percent"] = 10.0
+		case "aggressive":
+			config["take_profit_percent"] = 30.0
+		default:
+			config["take_profit_percent"] = 20.0
+		}
+	}
+
+	maxPositionSize, ok := config["max_position_size"].(float64)
+	if !ok || maxPositionSize <= 0 || maxPositionSize > 1 {
+		config["max_position_size"] = 0.35 // 默认单个仓位最大35%
+	}
+
+	// 验证期货参数
+	enableFutures, _ := config["enable_futures"].(bool)
+	if enableFutures {
+		leverage, ok := config["futures_leverage"].(float64)
+		if !ok || leverage < 1 || leverage > 20 {
+			config["futures_leverage"] = 3.0 // 默认3倍杠杆
+		}
 	}
 
 	return nil
@@ -441,10 +556,10 @@ func (ss *StrategyService) executeIcebergStrategy(strategy *models.Strategy, bin
 	for i := 0; i < layers; i++ {
 		quantityRatio := layerQuantities[i].(float64)
 		priceFloat := layerPriceFloats[i].(float64)
-		
+
 		// 计算该层数量
 		layerQty := strategy.Quantity * quantityRatio
-		
+
 		// 计算该层价格
 		var layerPrice float64
 		if strategy.Side == models.OrderSideBuy {
@@ -490,13 +605,13 @@ func (ss *StrategyService) executeSlowIcebergStrategy(strategy *models.Strategy,
 	layerQuantities := config["layer_quantities"].([]interface{})
 	layerPriceFloats := config["layer_price_floats"].([]interface{})
 	timeout := int(config["timeout"].(float64))
-	
+
 	// 获取当前价格
 	currentPrice, err := binanceService.GetPrice(context.Background(), strategy.Symbol)
 	if err != nil {
 		return err
 	}
-	
+
 	// 检查是否触发
 	if strategy.Side == models.OrderSideBuy && currentPrice > strategy.TriggerPrice {
 		return nil
@@ -504,7 +619,7 @@ func (ss *StrategyService) executeSlowIcebergStrategy(strategy *models.Strategy,
 	if strategy.Side == models.OrderSideSell && currentPrice < strategy.TriggerPrice {
 		return nil
 	}
-	
+
 	// 获取策略的执行状态
 	var strategyState map[string]interface{}
 	if strategy.State != nil {
@@ -512,24 +627,24 @@ func (ss *StrategyService) executeSlowIcebergStrategy(strategy *models.Strategy,
 	} else {
 		strategyState = make(map[string]interface{})
 	}
-	
+
 	// 初始化状态
 	currentLayer, _ := strategyState["current_layer"].(float64)
 	currentLayerInt := int(currentLayer)
-	
+
 	layerFilledQuantity, _ := strategyState["layer_filled_quantity"].(float64)
 	totalFilledQuantity, _ := strategyState["total_filled_quantity"].(float64)
-	
+
 	// 检查是否所有层都已完成
 	if currentLayerInt >= layers {
 		ss.db.Model(strategy).Update("is_completed", true)
 		return nil
 	}
-	
+
 	// 检查现有活跃订单
 	var activeOrders []models.Order
 	ss.db.Where("strategy_id = ? AND status IN ?", strategy.ID, []string{"NEW", "PARTIALLY_FILLED"}).Find(&activeOrders)
-	
+
 	if len(activeOrders) > 0 {
 		// 检查超时
 		for _, order := range activeOrders {
@@ -543,15 +658,15 @@ func (ss *StrategyService) executeSlowIcebergStrategy(strategy *models.Strategy,
 						// 部分成交，更新已成交数量
 						layerFilledQuantity += executedQty
 						totalFilledQuantity += executedQty
-						
+
 						// 更新数据库中的订单信息
 						ss.db.Model(&order).Updates(map[string]interface{}{
 							"executed_qty": executedQty,
-							"status": orderResp.Status,
+							"status":       orderResp.Status,
 						})
 					}
 				}
-				
+
 				// 取消超时订单
 				if _, err := binanceService.CancelSpotOrder(context.Background(), order.Symbol, order.OrderID); err != nil {
 					log.Printf("取消订单失败: %v", err)
@@ -560,27 +675,27 @@ func (ss *StrategyService) executeSlowIcebergStrategy(strategy *models.Strategy,
 				}
 			}
 		}
-		
+
 		// 重新检查活跃订单
 		ss.db.Where("strategy_id = ? AND status IN ?", strategy.ID, []string{"NEW", "PARTIALLY_FILLED"}).Find(&activeOrders)
 		if len(activeOrders) > 0 {
 			return nil // 还有活跃订单未超时
 		}
 	}
-	
+
 	// 计算当前层的总数量
 	var currentLayerTotalQty float64
 	if currentLayerInt < layers {
 		quantityRatio := layerQuantities[currentLayerInt].(float64)
 		currentLayerTotalQty = strategy.Quantity * quantityRatio
 	}
-	
+
 	// 检查当前层是否已完成
-	if layerFilledQuantity >= currentLayerTotalQty - 0.00000001 { // 使用极小值避免浮点数精度问题
+	if layerFilledQuantity >= currentLayerTotalQty-0.00000001 { // 使用极小值避免浮点数精度问题
 		// 当前层已完成，进入下一层
 		currentLayerInt++
 		layerFilledQuantity = 0
-		
+
 		// 检查是否所有层都已完成
 		if currentLayerInt >= layers {
 			strategyState["current_layer"] = float64(currentLayerInt)
@@ -590,12 +705,12 @@ func (ss *StrategyService) executeSlowIcebergStrategy(strategy *models.Strategy,
 			ss.db.Model(strategy).Update("is_completed", true)
 			return nil
 		}
-		
+
 		// 更新当前层的总数量
 		quantityRatio := layerQuantities[currentLayerInt].(float64)
 		currentLayerTotalQty = strategy.Quantity * quantityRatio
 	}
-	
+
 	// 计算当前层剩余需要挂单的数量
 	remainingQty := currentLayerTotalQty - layerFilledQuantity
 	if remainingQty <= 0.00000001 { // 避免极小数量
@@ -613,13 +728,13 @@ func (ss *StrategyService) executeSlowIcebergStrategy(strategy *models.Strategy,
 		quantityRatio := layerQuantities[currentLayerInt].(float64)
 		remainingQty = strategy.Quantity * quantityRatio
 	}
-	
+
 	// 获取最新的买一/卖一价（每次挂单都重新获取，确保价格最新）
 	depth, err := binanceService.GetOrderBook(context.Background(), strategy.Symbol, 5)
 	if err != nil {
 		return err
 	}
-	
+
 	var basePrice float64
 	if strategy.Side == models.OrderSideBuy {
 		if len(depth.Bids) > 0 {
@@ -634,7 +749,7 @@ func (ss *StrategyService) executeSlowIcebergStrategy(strategy *models.Strategy,
 			basePrice = currentPrice * 1.001
 		}
 	}
-	
+
 	// 根据最新买卖1价和当前层的价格浮动百分比计算价格
 	priceFloat := layerPriceFloats[currentLayerInt].(float64)
 	var layerPrice float64
@@ -643,7 +758,7 @@ func (ss *StrategyService) executeSlowIcebergStrategy(strategy *models.Strategy,
 	} else {
 		layerPrice = basePrice * (1 + priceFloat/10000)
 	}
-	
+
 	// 创建订单（挂当前层的剩余数量）
 	order := &models.Order{
 		UserID:        strategy.UserID,
@@ -656,29 +771,29 @@ func (ss *StrategyService) executeSlowIcebergStrategy(strategy *models.Strategy,
 		TimeInForce:   "GTC",
 		ClientOrderID: utils.GenerateUUID(),
 	}
-	
-	log.Printf("慢冰山策略: 第%d层，挂单数量: %.8f，基准价格(买/卖1价): %.8f，浮动万分之%.0f，最终价格: %.8f", 
+
+	log.Printf("慢冰山策略: 第%d层，挂单数量: %.8f，基准价格(买/卖1价): %.8f，浮动万分之%.0f，最终价格: %.8f",
 		currentLayerInt+1, remainingQty, basePrice, priceFloat, layerPrice)
-	
+
 	resp, err := binanceService.CreateSpotOrder(context.Background(), order)
 	if err != nil {
 		log.Printf("创建订单失败: %v", err)
 		return err
 	}
-	
+
 	order.OrderID = strconv.FormatInt(resp.OrderID, 10)
 	order.Status = models.OrderStatus(resp.Status)
-	
+
 	if err := ss.db.Create(order).Error; err != nil {
 		log.Printf("保存订单失败: %v", err)
 	}
-	
+
 	// 更新策略状态
 	strategyState["current_layer"] = float64(currentLayerInt)
 	strategyState["layer_filled_quantity"] = layerFilledQuantity
 	strategyState["total_filled_quantity"] = totalFilledQuantity
 	ss.db.Model(strategy).Update("state", strategyState)
-	
+
 	return nil
 }
 
@@ -841,7 +956,7 @@ func (ss *StrategyService) GetStrategyStats(userID, strategyID uint) (map[string
 // calculateDefaultLayerQuantities 计算默认的层级数量分布
 func (ss *StrategyService) calculateDefaultLayerQuantities(layers int) []float64 {
 	quantities := make([]float64, layers)
-	
+
 	if layers == 10 {
 		// 10层的特殊分布
 		distribution := []float64{0.19, 0.17, 0.15, 0.13, 0.11, 0.09, 0.07, 0.05, 0.03, 0.01}
@@ -853,19 +968,19 @@ func (ss *StrategyService) calculateDefaultLayerQuantities(layers int) []float64
 			quantities[i] = float64(layers-i) / totalSteps
 		}
 	}
-	
+
 	return quantities
 }
 
 // calculateDefaultLayerPriceFloats 计算默认的层级价格浮动
 func (ss *StrategyService) calculateDefaultLayerPriceFloats(layers int) []float64 {
 	priceFloats := make([]float64, layers)
-	
+
 	// 每层递增万分之8
 	for i := 0; i < layers; i++ {
 		priceFloats[i] = float64(i * 8)
 	}
-	
+
 	return priceFloats
 }
 
@@ -876,19 +991,19 @@ func (ss *StrategyService) syncOrderStatus(strategy *models.Strategy, order *mod
 	if err != nil {
 		return err
 	}
-	
+
 	// 更新订单状态
 	executedQty, _ := strconv.ParseFloat(orderResp.ExecutedQuantity, 64)
-	
+
 	updates := map[string]interface{}{
-		"status": orderResp.Status,
+		"status":       orderResp.Status,
 		"executed_qty": executedQty,
 	}
-	
+
 	if err := ss.db.Model(order).Updates(updates).Error; err != nil {
 		return err
 	}
-	
+
 	// 如果是慢冰山策略，更新策略状态
 	if strategy.Type == models.StrategySlowIceberg && orderResp.Status == "FILLED" {
 		var strategyState map[string]interface{}
@@ -897,20 +1012,20 @@ func (ss *StrategyService) syncOrderStatus(strategy *models.Strategy, order *mod
 		} else {
 			strategyState = make(map[string]interface{})
 		}
-		
+
 		// 更新已成交数量
 		totalFilledQuantity, _ := strategyState["total_filled_quantity"].(float64)
 		totalFilledQuantity += executedQty
 		strategyState["total_filled_quantity"] = totalFilledQuantity
-		
+
 		// 当前层已成交数量清零（因为该订单已完全成交）
 		strategyState["layer_filled_quantity"] = 0.0
-		
+
 		// 更新策略状态
 		if err := ss.db.Model(strategy).Update("state", strategyState).Error; err != nil {
 			return err
 		}
 	}
-	
+
 	return nil
 }

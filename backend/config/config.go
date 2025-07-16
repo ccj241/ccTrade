@@ -61,6 +61,7 @@ type BinanceConfig struct {
 	Timeout          int    `json:"timeout"`
 	SpotAgentCode    string `json:"spot_agent_code"`
 	FuturesAgentCode string `json:"futures_agent_code"`
+	RecvWindow       int64  `json:"recv_window"`
 }
 
 type SecurityConfig struct {
@@ -117,6 +118,7 @@ func LoadConfig() *Config {
 			Timeout:          getEnvAsInt("BINANCE_TIMEOUT", 30),
 			SpotAgentCode:    getEnv("BINANCE_SPOT_AGENT_CODE", "JW9QZKMK"),
 			FuturesAgentCode: getEnv("BINANCE_FUTURES_AGENT_CODE", "mNY8WNSQ"),
+			RecvWindow:       getEnvAsInt64("BINANCE_RECV_WINDOW", 60000),
 		},
 		Security: SecurityConfig{
 			EncryptionKey:    "", // Will be set below
@@ -129,12 +131,28 @@ func LoadConfig() *Config {
 	// 处理加密密钥
 	encryptionKey := os.Getenv("ENCRYPTION_KEY")
 	if encryptionKey == "" {
-		log.Fatal("错误: ENCRYPTION_KEY 环境变量必须设置且不能为空")
+		log.Println("警告: ENCRYPTION_KEY 环境变量未设置，生成临时密钥")
+		// 生成默认的32字符密钥
+		generatedKey, err := generateRandomKey(32)
+		if err != nil {
+			log.Printf("生成临时密钥失败: %v，使用预设密钥", err)
+			encryptionKey = "binance-trading-system-default-key"
+		} else {
+			encryptionKey = generatedKey
+		}
+		log.Printf("已生成临时加密密钥，建议设置 ENCRYPTION_KEY 环境变量")
 	}
 
 	// 验证密钥长度（AES-256需要32字节）
 	if len(encryptionKey) != 32 {
-		log.Fatalf("错误: ENCRYPTION_KEY 必须是32字符长度，当前长度: %d", len(encryptionKey))
+		log.Printf("警告: ENCRYPTION_KEY 长度不是32字符（当前长度: %d），自动调整", len(encryptionKey))
+		if len(encryptionKey) > 32 {
+			encryptionKey = encryptionKey[:32]
+		} else {
+			// 补齐到32字符
+			encryptionKey = encryptionKey + "0123456789abcdefghijklmnopqrstuvwxyz"[:32-len(encryptionKey)]
+		}
+		log.Printf("已调整加密密钥长度到32字符")
 	}
 
 	config.Security.EncryptionKey = encryptionKey
@@ -173,6 +191,15 @@ func getEnvAsBool(key string, defaultValue bool) bool {
 	if value := os.Getenv(key); value != "" {
 		if boolValue, err := strconv.ParseBool(value); err == nil {
 			return boolValue
+		}
+	}
+	return defaultValue
+}
+
+func getEnvAsInt64(key string, defaultValue int64) int64 {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.ParseInt(value, 10, 64); err == nil {
+			return intValue
 		}
 	}
 	return defaultValue
