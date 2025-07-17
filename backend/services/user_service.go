@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"github.com/ccj241/cctrade/config"
 	"github.com/ccj241/cctrade/models"
 	"github.com/ccj241/cctrade/utils"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
+	"strings"
 	"time"
 )
 
@@ -89,7 +89,7 @@ func (us *UserService) GetUserByID(id uint) (*models.User, error) {
 	if err := us.db.First(&user, id).Error; err != nil {
 		return nil, err
 	}
-	
+
 	// 设置HasAPIKey字段，用于前端显示
 	// 如果API密钥已加密，只要密钥字段不为空就表示已配置
 	if user.IsEncrypted {
@@ -98,12 +98,12 @@ func (us *UserService) GetUserByID(id uint) (*models.User, error) {
 		// 未加密的情况下，直接判断
 		user.HasAPIKey = user.APIKey != "" && user.SecretKey != ""
 	}
-	
+
 	// 清除敏感信息
 	user.Password = ""
 	user.APIKey = ""
 	user.SecretKey = ""
-	
+
 	return &user, nil
 }
 
@@ -111,13 +111,13 @@ func (us *UserService) UpdateUserAPIKeys(userID uint, apiKey, secretKey string) 
 	// 清理API密钥中的空白字符和换行符
 	apiKey = strings.TrimSpace(apiKey)
 	secretKey = strings.TrimSpace(secretKey)
-	
+
 	// 移除所有换行符和回车符
 	apiKey = strings.ReplaceAll(apiKey, "\n", "")
 	apiKey = strings.ReplaceAll(apiKey, "\r", "")
 	secretKey = strings.ReplaceAll(secretKey, "\n", "")
 	secretKey = strings.ReplaceAll(secretKey, "\r", "")
-	
+
 	if err := utils.ValidateAPIKey(apiKey); err != nil {
 		return err
 	}
@@ -138,7 +138,7 @@ func (us *UserService) UpdateUserAPIKeys(userID uint, apiKey, secretKey string) 
 	// 验证步骤是可选的，先尝试验证，如果失败也允许保存
 	// 用户可以通过单独的验证接口来验证密钥
 	shouldValidate := false // 暂时禁用自动验证，避免保存时出错
-	
+
 	if shouldValidate {
 		binanceService, err := NewBinanceService(encryptedAPIKey, encryptedSecretKey)
 		if err != nil {
@@ -198,8 +198,19 @@ func (us *UserService) ValidateUserAPIKeys(userID uint) error {
 		return errors.New("API密钥未设置")
 	}
 
+	// 解密API密钥
+	decryptedAPIKey, err := utils.DecryptAES(user.APIKey, config.AppConfig.Security.EncryptionKey)
+	if err != nil {
+		return fmt.Errorf("解密API密钥失败: %w", err)
+	}
+
+	decryptedSecretKey, err := utils.DecryptAES(user.SecretKey, config.AppConfig.Security.EncryptionKey)
+	if err != nil {
+		return fmt.Errorf("解密Secret密钥失败: %w", err)
+	}
+
 	// 创建币安服务实例
-	binanceService, err := NewBinanceService(user.APIKey, user.SecretKey)
+	binanceService, err := NewBinanceService(decryptedAPIKey, decryptedSecretKey)
 	if err != nil {
 		return fmt.Errorf("创建币安服务失败: %w", err)
 	}
@@ -282,10 +293,10 @@ func (us *UserService) GetAllUsers(page, limit int) ([]models.User, int64, error
 	for i := range users {
 		// 先保存API密钥状态
 		hasAPIKey := users[i].APIKey != "" && users[i].SecretKey != ""
-		
+
 		// 设置HasAPIKey字段，用于前端显示
 		users[i].HasAPIKey = hasAPIKey
-		
+
 		// 清除敏感信息
 		users[i].Password = ""
 		users[i].APIKey = ""
