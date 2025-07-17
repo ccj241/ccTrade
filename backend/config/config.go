@@ -62,6 +62,9 @@ type BinanceConfig struct {
 	SpotAgentCode    string `json:"spot_agent_code"`
 	FuturesAgentCode string `json:"futures_agent_code"`
 	RecvWindow       int64  `json:"recv_window"`
+	// 全局API密钥配置（用于测试或默认配置）
+	GlobalAPIKey    string `json:"global_api_key"`
+	GlobalSecretKey string `json:"global_secret_key"`
 }
 
 type SecurityConfig struct {
@@ -119,6 +122,8 @@ func LoadConfig() *Config {
 			SpotAgentCode:    getEnv("BINANCE_SPOT_AGENT_CODE", "JW9QZKMK"),
 			FuturesAgentCode: getEnv("BINANCE_FUTURES_AGENT_CODE", "mNY8WNSQ"),
 			RecvWindow:       getEnvAsInt64("BINANCE_RECV_WINDOW", 60000),
+			GlobalAPIKey:     getEnv("BINANCE_API_KEY", ""),
+			GlobalSecretKey:  getEnv("BINANCE_SECRET_KEY", ""),
 		},
 		Security: SecurityConfig{
 			EncryptionKey:    "", // Will be set below

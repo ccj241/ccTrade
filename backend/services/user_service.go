@@ -170,21 +170,28 @@ func (us *UserService) GetUserAPIKeys(userID uint) (string, string, error) {
 		return "", "", err
 	}
 
-	if !user.IsEncrypted || user.APIKey == "" || user.SecretKey == "" {
-		return "", "", errors.New("API密钥未设置")
+	// 如果用户已设置加密的API密钥，则使用用户的密钥
+	if user.IsEncrypted && user.APIKey != "" && user.SecretKey != "" {
+		apiKey, err := utils.DecryptAES(user.APIKey, config.AppConfig.Security.EncryptionKey)
+		if err != nil {
+			return "", "", err
+		}
+
+		secretKey, err := utils.DecryptAES(user.SecretKey, config.AppConfig.Security.EncryptionKey)
+		if err != nil {
+			return "", "", err
+		}
+
+		return apiKey, secretKey, nil
 	}
 
-	apiKey, err := utils.DecryptAES(user.APIKey, config.AppConfig.Security.EncryptionKey)
-	if err != nil {
-		return "", "", err
+	// 如果用户未设置密钥，尝试使用全局配置的密钥
+	if config.AppConfig.Binance.GlobalAPIKey != "" && config.AppConfig.Binance.GlobalSecretKey != "" {
+		logrus.WithField("user_id", userID).Info("使用全局API密钥配置")
+		return config.AppConfig.Binance.GlobalAPIKey, config.AppConfig.Binance.GlobalSecretKey, nil
 	}
 
-	secretKey, err := utils.DecryptAES(user.SecretKey, config.AppConfig.Security.EncryptionKey)
-	if err != nil {
-		return "", "", err
-	}
-
-	return apiKey, secretKey, nil
+	return "", "", errors.New("API密钥未设置，请在个人资料中配置API密钥，或联系管理员设置全局密钥")
 }
 
 // ValidateUserAPIKeys 验证用户的API密钥是否有效
