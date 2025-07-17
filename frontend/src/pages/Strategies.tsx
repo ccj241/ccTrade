@@ -127,8 +127,7 @@ export const Strategies: React.FC = () => {
       layer_quantities: [],
       layer_price_floats: [],
     },
-    mode: 'onChange', // 实时验证
-    mode: 'onChange'
+    mode: 'onChange' // 实时验证
   });
 
   const watchedValues = watch();

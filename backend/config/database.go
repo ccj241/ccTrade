@@ -26,15 +26,18 @@ func InitDatabase(config *Config) error {
 	// 使用环境变量判断是否使用SQLite进行开发
 	if os.Getenv("USE_SQLITE") == "true" {
 		// 使用SQLite作为开发数据库
-		DB, err = gorm.Open(sqlite.Open("binance_trading.db"), &gorm.Config{
+		var tempDB *gorm.DB
+		tempDB, err = gorm.Open(sqlite.Open("binance_trading.db"), &gorm.Config{
 			Logger:                                   logger.Default.LogMode(logger.Info),
 			DisableForeignKeyConstraintWhenMigrating: true,
 		})
 		if err != nil {
 			log.Printf("SQLite数据库连接失败: %v", err)
 			log.Println("警告：SQLite数据库不可用，某些功能将受限")
+			DB = nil // 确保 DB 为 nil
 			return fmt.Errorf("SQLite数据库连接失败: %v", err)
 		}
+		DB = tempDB
 		log.Println("使用SQLite数据库进行开发")
 	} else {
 		// 使用MySQL作为生产数据库
@@ -47,15 +50,18 @@ func InitDatabase(config *Config) error {
 			config.Database.Charset,
 		)
 
-		DB, err = gorm.Open(mysql.Open(dsn), &gorm.Config{
+		var tempDB *gorm.DB
+		tempDB, err = gorm.Open(mysql.Open(dsn), &gorm.Config{
 			Logger:                                   logger.Default.LogMode(logger.Info),
 			DisableForeignKeyConstraintWhenMigrating: true,
 		})
 		if err != nil {
 			log.Printf("MySQL数据库连接失败: %v", err)
 			log.Println("警告：MySQL数据库不可用，尝试使用SQLite备用数据库")
+			DB = nil // 确保 DB 为 nil
 			return fmt.Errorf("MySQL数据库连接失败: %v", err)
 		}
+		DB = tempDB
 		log.Println("MySQL数据库连接成功")
 	}
 
@@ -96,6 +102,10 @@ func InitRedis(config *Config) error {
 }
 
 func AutoMigrate() error {
+	if DB == nil {
+		return fmt.Errorf("数据库未初始化")
+	}
+
 	err := DB.AutoMigrate(
 		&models.User{},
 		&models.Strategy{},

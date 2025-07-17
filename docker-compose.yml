@@ -1,52 +1,21 @@
 version: '3.8'
 
 services:
-  app:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    ports:
-      - "8080:8080"
-    environment:
-      - DB_HOST=mysql
-      - DB_PORT=3306
-      - DB_USERNAME=root
-      - DB_PASSWORD=rootpassword
-      - DB_DATABASE=binance_trading
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - JWT_SECRET=your-secret-key-change-this-in-production
-      - ENCRYPTION_KEY=binance-trading-system-default!!
-      - CREATE_TEST_DATA=true
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    volumes:
-      - ./logs:/root/logs
-      - ./backend/.air.toml:/app/.air.toml
-
+  # MySQL数据库
   mysql:
     image: mysql:8.0
+    container_name: cctrade-mysql
+    restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: rootpassword
       MYSQL_DATABASE: binance_trading
-      MYSQL_USER: appuser
-      MYSQL_PASSWORD: apppassword
+      MYSQL_USER: cctrade
+      MYSQL_PASSWORD: cctrade123
     ports:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./mysql-init.d:/docker-entrypoint-initdb.d
-    restart: unless-stopped
+      - ./deployment/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
@@ -57,14 +26,18 @@ services:
       --character-set-server=utf8mb4
       --collation-server=utf8mb4_unicode_ci
       --default-authentication-plugin=mysql_native_password
+    networks:
+      - cctrade-network
 
+  # Redis缓存
   redis:
     image: redis:7-alpine
+    container_name: cctrade-redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -72,46 +45,92 @@ services:
       retries: 3
       start_period: 10s
     command: redis-server --appendonly yes
+    networks:
+      - cctrade-network
 
-  frontend:
+  # 后端服务
+  backend:
     build:
-      context: ./frontend
-      dockerfile: Dockerfile.dev
-    ports:
-      - "3000:3000"
-    depends_on:
-      - app
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cctrade-backend
     restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - GIN_MODE=release
+      - APP_ENV=production
+      - USE_SQLITE=true
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USERNAME=cctrade
+      - DB_PASSWORD=cctrade123
+      - DB_DATABASE=binance_trading
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=SuperSecureJWTKeyForProduction2024!
+      - ENCRYPTION_KEY=SuperSecureEncryptionKey32Chars!
+    depends_on:
+      redis:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-    environment:
-      - NODE_ENV=development
     volumes:
-      - ./frontend:/app
-      - /app/node_modules
+      - ./logs:/app/logs
+    networks:
+      - cctrade-network
 
+  # 前端服务
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cctrade-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - cctrade-network
+
+  # Nginx反向代理
   nginx:
-    image: nginx:alpine
+    image: nginx:1.25-alpine
+    container_name: cctrade-nginx
+    restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
-      - ./nginx/conf.d:/etc/nginx/conf.d
-      - ./ssl:/etc/nginx/ssl
+      - ./deployment/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deployment/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./logs/nginx:/var/log/nginx
     depends_on:
-      - app
+      - backend
       - frontend
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - cctrade-network
 
 volumes:
   mysql_data:
   redis_data:
 
 networks:
-  default:
+  cctrade-network:
     driver: bridge

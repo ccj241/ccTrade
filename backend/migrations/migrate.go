@@ -1,6 +1,7 @@
 package migrations
 
 import (
+	"fmt"
 	"github.com/ccj241/cctrade/config"
 	"github.com/ccj241/cctrade/models"
 	"log"
@@ -29,6 +30,9 @@ func createIndexes() error {
 	log.Println("创建数据库索引...")
 
 	db := config.DB
+	if db == nil {
+		return fmt.Errorf("数据库未初始化")
+	}
 
 	queries := []string{
 		"CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)",
@@ -73,6 +77,10 @@ func createIndexes() error {
 
 func createDefaultAdmin() error {
 	log.Println("创建默认管理员账户...")
+
+	if config.DB == nil {
+		return fmt.Errorf("数据库未初始化")
+	}
 
 	var count int64
 	config.DB.Model(&models.User{}).Where("role = ?", models.RoleAdmin).Count(&count)

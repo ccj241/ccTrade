@@ -43,12 +43,17 @@ func main() {
 		defer config.CloseRedis()
 	}
 
-	if err := migrations.RunMigrations(); err != nil {
-		log.Printf("数据库迁移失败: %v", err)
-		// 继续运行，不退出
+	// 只有在数据库连接成功时才运行迁移
+	if config.DB != nil {
+		if err := migrations.RunMigrations(); err != nil {
+			log.Printf("数据库迁移失败: %v", err)
+			// 继续运行，不退出
+		}
+	} else {
+		log.Println("跳过数据库迁移（无数据库连接）")
 	}
 
-	if os.Getenv("CREATE_TEST_DATA") == "true" {
+	if os.Getenv("CREATE_TEST_DATA") == "true" && config.DB != nil {
 		if err := migrations.CreateTestData(); err != nil {
 			log.Printf("创建测试数据失败: %v", err)
 		}

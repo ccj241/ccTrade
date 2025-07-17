@@ -25,6 +25,10 @@ func NewDualInvestmentService() *DualInvestmentService {
 }
 
 func (dis *DualInvestmentService) GetDualInvestmentProducts() ([]models.DualInvestmentProduct, error) {
+	if dis.db == nil {
+		return []models.DualInvestmentProduct{}, nil // 返回空列表
+	}
+
 	var products []models.DualInvestmentProduct
 	if err := dis.db.Where("is_active = ?", true).Find(&products).Error; err != nil {
 		return nil, err
@@ -33,6 +37,10 @@ func (dis *DualInvestmentService) GetDualInvestmentProducts() ([]models.DualInve
 }
 
 func (dis *DualInvestmentService) CreateDualInvestmentStrategy(userID uint, strategyData map[string]interface{}) (*models.DualInvestmentStrategy, error) {
+	if dis.db == nil {
+		return nil, errors.New("数据库未连接")
+	}
+
 	strategy := &models.DualInvestmentStrategy{
 		UserID: userID,
 	}
@@ -346,6 +354,11 @@ func (dis *DualInvestmentService) GetDualInvestmentStats(userID uint) (map[strin
 }
 
 func (dis *DualInvestmentService) SyncDualInvestmentProducts() error {
+	if dis.db == nil {
+		log.Println("数据库未连接，跳过双币投资产品同步")
+		return nil
+	}
+
 	mockProducts := []models.DualInvestmentProduct{
 		{
 			ProductID:      "BTC001",
